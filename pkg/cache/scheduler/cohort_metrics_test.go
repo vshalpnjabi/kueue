@@ -1704,6 +1704,170 @@ func TestCohortAdmittedWorkloadsCustomLabelsCountMatchingClusterQueues(t *testin
 				{labels: cohortOnly("a"), value: 1},
 			},
 		},
+		"relabeling a cluster queue moves its series": {
+			cohorts: []*kueue.Cohort{utiltestingapi.MakeCohort("a").Obj()},
+			cqs: []*kueue.ClusterQueue{
+				cq1.Clone().Cohort("a").Label("team", "alpha").Obj(),
+			},
+			workloads: []*kueue.Workload{
+				baseWorkload.Clone().Name("cq1-wl").Obj(),
+			},
+			change: func(t *testing.T, log logr.Logger, cache *Cache, customLabels *kueuemetrics.CustomLabels) {
+				relabeled := cq1.Clone().Cohort("a").Label("team", "beta").Obj()
+				customLabels.CQStore(kueue.ClusterQueueReference(relabeled.Name), relabeled.Labels, relabeled.Annotations)
+				if err := cache.UpdateClusterQueue(log, relabeled); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantValues: []struct {
+				labels map[string]string
+				value  float64
+			}{
+				{labels: teamLabels("a", "beta"), value: 1},
+			},
+			wantSums: []struct {
+				labels map[string]string
+				value  float64
+			}{
+				{labels: cohortOnly("a"), value: 1},
+			},
+			wantCounts: []struct {
+				labels map[string]string
+				count  int
+			}{
+				{labels: teamLabels("a", "alpha"), count: 0},
+			},
+		},
+		"relabeling one of two cluster queues sharing a label keeps the other series": {
+			cohorts: []*kueue.Cohort{utiltestingapi.MakeCohort("a").Obj()},
+			cqs: []*kueue.ClusterQueue{
+				cq1.Clone().Cohort("a").Label("team", "alpha").Obj(),
+				cq2.Clone().Cohort("a").Label("team", "alpha").Obj(),
+			},
+			workloads: []*kueue.Workload{
+				baseWorkload.Clone().Name("cq1-wl").Obj(),
+				baseWorkload.Clone().Name("cq2-wl").ReserveQuotaAt(utiltestingapi.MakeAdmission("cq2").
+					PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).
+						Assignment(corev1.ResourceCPU, "default", "1").
+						Obj()).
+					Obj(), now).AdmittedAt(true, now).Obj(),
+			},
+			change: func(t *testing.T, log logr.Logger, cache *Cache, customLabels *kueuemetrics.CustomLabels) {
+				relabeled := cq1.Clone().Cohort("a").Label("team", "beta").Obj()
+				customLabels.CQStore(kueue.ClusterQueueReference(relabeled.Name), relabeled.Labels, relabeled.Annotations)
+				if err := cache.UpdateClusterQueue(log, relabeled); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantValues: []struct {
+				labels map[string]string
+				value  float64
+			}{
+				{labels: teamLabels("a", "alpha"), value: 1},
+				{labels: teamLabels("a", "beta"), value: 1},
+			},
+			wantSums: []struct {
+				labels map[string]string
+				value  float64
+			}{
+				{labels: cohortOnly("a"), value: 2},
+			},
+		},
+		"relabeling a nested cluster queue updates ancestor series": {
+			cohorts: []*kueue.Cohort{
+				utiltestingapi.MakeCohort("root").Obj(),
+				utiltestingapi.MakeCohort("child").Parent("root").Obj(),
+			},
+			cqs: []*kueue.ClusterQueue{
+				cq1.Clone().Cohort("child").Label("team", "alpha").Obj(),
+				cq2.Clone().Cohort("child").Label("team", "beta").Obj(),
+			},
+			workloads: []*kueue.Workload{
+				baseWorkload.Clone().Name("cq1-wl").Obj(),
+				baseWorkload.Clone().Name("cq2-wl").ReserveQuotaAt(utiltestingapi.MakeAdmission("cq2").
+					PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).
+						Assignment(corev1.ResourceCPU, "default", "1").
+						Obj()).
+					Obj(), now).AdmittedAt(true, now).Obj(),
+			},
+			change: func(t *testing.T, log logr.Logger, cache *Cache, customLabels *kueuemetrics.CustomLabels) {
+				relabeled := cq1.Clone().Cohort("child").Label("team", "gamma").Obj()
+				customLabels.CQStore(kueue.ClusterQueueReference(relabeled.Name), relabeled.Labels, relabeled.Annotations)
+				if err := cache.UpdateClusterQueue(log, relabeled); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantValues: []struct {
+				labels map[string]string
+				value  float64
+			}{
+				{labels: teamLabels("child", "gamma"), value: 1},
+				{labels: teamLabels("child", "beta"), value: 1},
+				{labels: teamLabels("root", "gamma"), value: 1},
+				{labels: teamLabels("root", "beta"), value: 1},
+			},
+			wantSums: []struct {
+				labels map[string]string
+				value  float64
+			}{
+				{labels: cohortOnly("child"), value: 2},
+				{labels: cohortOnly("root"), value: 2},
+			},
+			wantCounts: []struct {
+				labels map[string]string
+				count  int
+			}{
+				{labels: teamLabels("child", "alpha"), count: 0},
+				{labels: teamLabels("root", "alpha"), count: 0},
+			},
+		},
+		"moving a relabeled cluster queue drops the old parent series": {
+			cohorts: []*kueue.Cohort{
+				utiltestingapi.MakeCohort("a").Obj(),
+				utiltestingapi.MakeCohort("b").Obj(),
+			},
+			cqs: []*kueue.ClusterQueue{
+				cq1.Clone().Cohort("a").Label("team", "alpha").Obj(),
+				cq2.Clone().Cohort("a").Label("team", "beta").Obj(),
+			},
+			workloads: []*kueue.Workload{
+				baseWorkload.Clone().Name("cq1-wl").Obj(),
+				baseWorkload.Clone().Name("cq2-wl").ReserveQuotaAt(utiltestingapi.MakeAdmission("cq2").
+					PodSets(utiltestingapi.MakePodSetAssignment(kueue.DefaultPodSetName).
+						Assignment(corev1.ResourceCPU, "default", "1").
+						Obj()).
+					Obj(), now).AdmittedAt(true, now).Obj(),
+			},
+			change: func(t *testing.T, log logr.Logger, cache *Cache, customLabels *kueuemetrics.CustomLabels) {
+				moved := cq1.Clone().Cohort("b").Label("team", "gamma").Obj()
+				customLabels.CQStore(kueue.ClusterQueueReference(moved.Name), moved.Labels, moved.Annotations)
+				if err := cache.UpdateClusterQueue(log, moved); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantValues: []struct {
+				labels map[string]string
+				value  float64
+			}{
+				{labels: teamLabels("a", "beta"), value: 1},
+				{labels: teamLabels("b", "gamma"), value: 1},
+			},
+			wantSums: []struct {
+				labels map[string]string
+				value  float64
+			}{
+				{labels: cohortOnly("a"), value: 1},
+				{labels: cohortOnly("b"), value: 1},
+			},
+			wantCounts: []struct {
+				labels map[string]string
+				count  int
+			}{
+				{labels: teamLabels("a", "alpha"), count: 0},
+				{labels: teamLabels("a", "gamma"), count: 0},
+				{labels: teamLabels("b", "alpha"), count: 0},
+			},
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

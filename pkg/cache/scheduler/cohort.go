@@ -23,6 +23,7 @@ import (
 	kueuealpha "sigs.k8s.io/kueue/apis/kueue/v1alpha1"
 	kueue "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 	"sigs.k8s.io/kueue/pkg/cache/hierarchy"
+	"sigs.k8s.io/kueue/pkg/metrics"
 	"sigs.k8s.io/kueue/pkg/util/dqo"
 	"sigs.k8s.io/kueue/pkg/util/resourcegroups"
 )
@@ -41,14 +42,20 @@ type cohort struct {
 	// recomputed from the children whenever the tree is rebuilt.
 	admittedWorkloadsCount int
 
+	// admittedLabelCounts tracks admitted Workloads by ClusterQueue custom-label
+	// values. Workload events and in-place relabels update it along the path to
+	// the root. Tree rebuilds replace it from the children.
+	admittedLabelCounts *metrics.LabelValsTracker
+
 	DynamicQuotaOrchestrator kueuealpha.DynamicQuotaOrchestratorReference
 }
 
 func newCohort(name kueue.CohortReference) *cohort {
 	return &cohort{
-		Name:         name,
-		Cohort:       hierarchy.NewCohort[*clusterQueue](),
-		resourceNode: NewResourceNode(),
+		Name:                name,
+		Cohort:              hierarchy.NewCohort[*clusterQueue](),
+		resourceNode:        NewResourceNode(),
+		admittedLabelCounts: metrics.NewLabelValsTracker(),
 	}
 }
 
@@ -116,13 +123,42 @@ func (c *cohort) PathSelfToRoot() iter.Seq[*cohort] {
 	}
 }
 
-func (c *cohort) updateAdmittedWorkloadsCount(delta int) {
+func (c *cohort) updateAdmittedWorkloadsCount(delta int, labelVals []string) {
 	if c == nil || hierarchy.HasCycle(c) {
 		return
 	}
+	ls := metrics.ValsSetFrom(labelVals)
 	for ancestor := range c.PathSelfToRoot() {
 		ancestor.admittedWorkloadsCount += delta
+		ancestor.ensureAdmittedLabelCounts().Add(ls, delta)
 	}
+}
+
+func (c *cohort) moveAdmittedLabelCounts(oldVals, newVals []string, delta int) {
+	if c == nil || hierarchy.HasCycle(c) || delta == 0 || slices.Equal(oldVals, newVals) {
+		return
+	}
+	oldLS := metrics.ValsSetFrom(oldVals)
+	newLS := metrics.ValsSetFrom(newVals)
+	for ancestor := range c.PathSelfToRoot() {
+		counts := ancestor.ensureAdmittedLabelCounts()
+		counts.Add(oldLS, -delta)
+		counts.Add(newLS, delta)
+	}
+}
+
+func (c *cohort) ensureAdmittedLabelCounts() *metrics.LabelValsTracker {
+	if c.admittedLabelCounts == nil {
+		c.admittedLabelCounts = metrics.NewLabelValsTracker()
+	}
+	return c.admittedLabelCounts
+}
+
+func (c *cohort) admittedCountForLabels(labelVals []string) int {
+	if len(labelVals) == 0 {
+		return c.admittedWorkloadsCount
+	}
+	return c.ensureAdmittedLabelCounts().Count(metrics.ValsSetFrom(labelVals))
 }
 
 // admittedWorkloadsInCQsWithLabels counts only ClusterQueues whose custom labels

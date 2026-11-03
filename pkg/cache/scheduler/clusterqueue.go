@@ -116,6 +116,11 @@ type clusterQueue struct {
 	// allows access to values extracted from K8s labels/annotations, used as custom Prometheus metric labels
 	customLabels *metrics.CustomLabels
 
+	// reportedLabelVals is the ClusterQueue custom-label set last applied to
+	// ancestor admittedLabelCounts. CQStore can change GetCustomLabelValues
+	// before the cache sees the update, so relabel handling compares against this.
+	reportedLabelVals []string
+
 	lqMetrics *metrics.LocalQueueMetricsConfig
 
 	// lqAdmittedActiveResync serializes the rebuilds of the LocalQueue admitted
@@ -568,12 +573,9 @@ func (c *clusterQueue) reportActiveWorkloads() {
 func (c *clusterQueue) reportCohortSubtreeAdmittedActiveWorkloads() {
 	clVals := c.GetCustomLabelValues()
 	for ancestor := range c.Parent().PathSelfToRoot() {
-		count := ancestor.admittedWorkloadsCount
-		if len(clVals) > 0 {
-			count = ancestor.admittedWorkloadsInCQsWithLabels(clVals)
-		}
-		metrics.ReportCohortSubtreeAdmittedActiveWorkloads(ancestor.Name, count, clVals, c.roleTracker)
+		metrics.ReportCohortSubtreeAdmittedActiveWorkloads(ancestor.Name, ancestor.admittedCountForLabels(clVals), clVals, c.roleTracker)
 	}
+	c.reportedLabelVals = slices.Clone(clVals)
 }
 
 func (c *clusterQueue) reportAdmittedActiveWorkloads(wlRef workload.Reference, wl *kueue.Workload, incr int) {
@@ -688,7 +690,7 @@ func (c *clusterQueue) updateWorkloadUsage(log logr.Logger, wi *workload.Info, o
 		updateFlavorUsage(frUsage, c.AdmittedUsage, op)
 
 		incr := op.asSignedOne()
-		c.Parent().updateAdmittedWorkloadsCount(incr)
+		c.Parent().updateAdmittedWorkloadsCount(incr, c.GetCustomLabelValues())
 		c.admittedWorkloadsCount += incr
 
 		wlRef := workload.Key(wi.Obj)
