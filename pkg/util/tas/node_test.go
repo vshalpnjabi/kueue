@@ -50,3 +50,51 @@ func TestNodeHostname(t *testing.T) {
 		})
 	}
 }
+
+func TestNodeMatchesFlavor(t *testing.T) {
+	const labelKey = "example.com/pool"
+	cases := map[string]struct {
+		nodeLabels     map[string]string
+		requiredLabels map[string]string
+		requiredLevels []string
+		want           bool
+	}{
+		"matching non-empty value": {
+			nodeLabels:     map[string]string{labelKey: "gpu"},
+			requiredLabels: map[string]string{labelKey: "gpu"},
+			want:           true,
+		},
+		"wrong value": {
+			nodeLabels:     map[string]string{labelKey: "cpu"},
+			requiredLabels: map[string]string{labelKey: "gpu"},
+			want:           false,
+		},
+		"missing required non-empty label": {
+			nodeLabels:     map[string]string{"kubernetes.io/hostname": "x1"},
+			requiredLabels: map[string]string{labelKey: "gpu"},
+			want:           false,
+		},
+		"empty required value matches present empty label": {
+			nodeLabels:     map[string]string{labelKey: ""},
+			requiredLabels: map[string]string{labelKey: ""},
+			want:           true,
+		},
+		"empty required value does not match missing label": {
+			nodeLabels:     map[string]string{"kubernetes.io/hostname": "x1"},
+			requiredLabels: map[string]string{labelKey: ""},
+			want:           false,
+		},
+		"empty required value does not match non-empty label": {
+			nodeLabels:     map[string]string{labelKey: "gpu"},
+			requiredLabels: map[string]string{labelKey: ""},
+			want:           false,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := NodeMatchesFlavor(tc.nodeLabels, tc.requiredLabels, tc.requiredLevels); got != tc.want {
+				t.Errorf("NodeMatchesFlavor() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
