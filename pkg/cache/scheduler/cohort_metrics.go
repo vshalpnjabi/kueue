@@ -277,10 +277,12 @@ func (c *Cache) reportMovedAdmittedActiveWorkloads(oldParent, newParent *cohort)
 }
 
 // reportClusterQueueAdmittedActiveWorkloads updates cohort gauges after a
-// ClusterQueue parent or custom-label change. A same-parent relabel moves
-// incremental per-label counts; a parent change or implicit-parent recreation
-// rebuilds the affected trees from children.
-func (c *Cache) reportClusterQueueAdmittedActiveWorkloads(cq *clusterQueue, oldParent, newParent *cohort) {
+// ClusterQueue parent or custom-label change. oldParent is the parent before
+// the edge update; cq.Parent() is the parent after it. A same-parent relabel
+// moves incremental per-label counts; a parent change or implicit-parent
+// recreation rebuilds the affected trees from children.
+func (c *Cache) reportClusterQueueAdmittedActiveWorkloads(cq *clusterQueue, oldParent *cohort) {
+	newParent := cq.Parent()
 	var liveOld *cohort
 	if oldParent != nil {
 		liveOld = c.hm.Cohort(oldParent.Name)
@@ -300,6 +302,10 @@ func (c *Cache) reportClusterQueueAdmittedActiveWorkloads(cq *clusterQueue, oldP
 	c.reportTreeAdmittedActiveWorkloadsIfNoCycle(newParent)
 }
 
+// reportRelabeledAdmittedActiveWorkloads moves a ClusterQueue's admitted-workload
+// counts from oldVals to newVals along the parent Cohort path. The old series is
+// deleted only when no ClusterQueue in the subtree still uses those labels;
+// otherwise it is reported at the remaining count, including zero.
 func (c *Cache) reportRelabeledAdmittedActiveWorkloads(cq *clusterQueue, parent *cohort, oldVals, newVals []string) {
 	if parent == nil || hierarchy.HasCycle(parent) {
 		cq.reportedLabelVals = slices.Clone(newVals)
@@ -320,6 +326,8 @@ func (c *Cache) reportRelabeledAdmittedActiveWorkloads(cq *clusterQueue, parent 
 	cq.reportedLabelVals = slices.Clone(newVals)
 }
 
+// reportTreeAdmittedActiveWorkloadsIfNoCycle rebuilds admitted-active gauges
+// from the Cohort's root when the Cohort exists and has no cycle.
 func (c *Cache) reportTreeAdmittedActiveWorkloadsIfNoCycle(cohort *cohort) {
 	if cohort != nil && !hierarchy.HasCycle(cohort) {
 		c.reportTreeAdmittedActiveWorkloads(cohort.getRootUnsafe())
