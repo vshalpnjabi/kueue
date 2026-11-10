@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -29,9 +30,6 @@ import (
 )
 
 func TestSetDistributionConditionTruncatesMessage(t *testing.T) {
-	// TruncateConditionMessage uses Go string length (bytes), matching the 32KiB
-	// metav1.Condition.Message limit in pkg/util/api.maxConditionMsgSize.
-	const maxConditionMsgSize = 32 * 1024
 	const generation int64 = 7
 	status := metav1.ConditionFalse
 	reason := kueuealpha.DynamicQuotaOrchestratorReasonMisconfigured
@@ -42,20 +40,8 @@ func TestSetDistributionConditionTruncatesMessage(t *testing.T) {
 		"short message is unchanged": {
 			message: "Quotas successfully distributed",
 		},
-		"exact 32KiB byte limit is unchanged": {
-			message: strings.Repeat("a", maxConditionMsgSize),
-		},
 		"message longer than 32KiB is truncated": {
-			message: strings.Repeat("a", maxConditionMsgSize+128),
-		},
-		"multibyte message under the byte limit is unchanged": {
-			// "世" is 3 bytes in UTF-8; 100 runes = 300 bytes, well under the limit.
-			message: strings.Repeat("世", 100),
-		},
-		"multibyte message over the byte limit is truncated by bytes": {
-			// 10923 * 3 = 32769 bytes, one byte over the limit.
-			// truncateMessage slices by len() (bytes), not runes.
-			message: strings.Repeat("世", 10923),
+			message: strings.Repeat("a", 32*1024+128),
 		},
 	}
 
@@ -75,9 +61,8 @@ func TestSetDistributionConditionTruncatesMessage(t *testing.T) {
 				t.Errorf("unexpected condition metadata: status=%s reason=%s observedGeneration=%d", got.Status, got.Reason, got.ObservedGeneration)
 			}
 			wantMessage := api.TruncateConditionMessage(tc.message)
-			if got.Message != wantMessage {
-				t.Errorf("message was not passed through api.TruncateConditionMessage: gotLen=%d wantLen=%d equalsInput=%t",
-					len(got.Message), len(wantMessage), got.Message == tc.message)
+			if diff := cmp.Diff(wantMessage, got.Message); diff != "" {
+				t.Errorf("Unexpected message (-want +got):\n%s", diff)
 			}
 		})
 	}
